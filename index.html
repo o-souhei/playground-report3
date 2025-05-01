@@ -59,7 +59,7 @@
   <div class="form-container">
     <h2>遊具トラブル報告フォーム</h2>
     <form id="rpt">
-      <!-- QRパラメータ自動挿入用 -->
+      <!-- hidden：QRで渡された情報をここにセット -->
       <input type="hidden" name="eid">
       <input type="hidden" name="gid">
       <input type="hidden" name="garden">
@@ -90,19 +90,20 @@
   </div>
 
   <script>
-    // URLからQRパラメータを取得して hidden にセット
+    // 🔄 URLのクエリからパラメータを取得して hidden に入れる
     const p = new URLSearchParams(location.search);
     document.querySelector('[name="eid"]').value = p.get('eid') || '';
     document.querySelector('[name="gid"]').value = p.get('gid') || '';
     document.querySelector('[name="garden"]').value = p.get('garden') || '';
     document.querySelector('[name="yugu"]').value = p.get('yugu') || '';
 
-    // 通報送信（Cloudflare Workerへ送信）
+    // 📤 送信処理（画像を縮小 → Cloudflare Worker へ送信）
     document.getElementById('rpt').addEventListener('submit', async e => {
       e.preventDefault();
       const fd = new FormData(e.target);
       const file = fd.get('photo');
 
+      // canvasで画像縮小
       const resized = await new Promise(resolve => {
         const img = new Image();
         img.onload = () => {
@@ -121,17 +122,18 @@
       reader.onload = async () => {
         const b64 = reader.result.split(',')[1];
         const body = {
-          eid:    fd.get('eid'),
-          gid:    fd.get('gid'),
+          eid: fd.get('eid'),
+          gid: fd.get('gid'),
           garden: fd.get('garden'),
-          yugu:   fd.get('yugu'),
+          yugu: fd.get('yugu'),
           category: fd.get('category'),
-          danger:   fd.get('danger'),
-          comment:  fd.get('comment'),
-          photo:    `data:image/jpeg;base64,${b64}`
+          danger: fd.get('danger'),
+          comment: fd.get('comment'),
+          photo: `data:image/jpeg;base64,${b64}`
         };
 
-        const res = await fetch('https://pg-worker.yourname.workers.dev', {
+        // 🔁 ここをあなたの Worker URL に変更
+        const res = await fetch('https://playground-report3.your-subdomain.workers.dev', {
           method: 'POST',
           body: JSON.stringify(body)
         });
