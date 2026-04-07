@@ -18,6 +18,15 @@
       padding: 1.5rem;
       border-radius: 1rem;
       box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+      margin-bottom: 1rem;
+    }
+    .tool-container {
+      max-width: 700px;
+      margin: auto;
+      background: #fff;
+      padding: 1.5rem;
+      border-radius: 1rem;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
     }
     h2 {
       text-align: center;
@@ -52,6 +61,26 @@
     }
     button:hover {
       background-color: #ff4c3b;
+    }
+    .hint {
+      color: #666;
+      font-size: 0.9rem;
+      margin: 0.3rem 0 0.8rem;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.8rem;
+    }
+    .status {
+      margin-top: 0.8rem;
+      font-size: 0.95rem;
+      color: #333;
+    }
+    @media (max-width: 640px) {
+      .row {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -88,6 +117,28 @@
       <button type="submit">送信する</button>
     </form>
   </div>
+  <div class="tool-container">
+    <h2>PDF→Excel 自動記入ツール</h2>
+    <p class="hint">PDFから文字情報を抽出し、Excelテンプレートの指定セルへ自動入力して保存します。</p>
+    <form id="pdfExcelForm">
+      <div class="row">
+        <div>
+          <label>入力PDF（必須）</label>
+          <input type="file" id="pdfFile" accept="application/pdf" required />
+        </div>
+        <div>
+          <label>Excelテンプレート（任意）</label>
+          <input type="file" id="excelTemplate" accept=".xlsx,.xls" />
+        </div>
+      </div>
+      <p class="hint">テンプレート未指定時は新規Excelを作成します。</p>
+      <button type="submit">Excelを作成する</button>
+      <div class="status" id="pdfExcelStatus"></div>
+    </form>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <script>
     // 🔄 URLのクエリからパラメータを取得して hidden に入れる
@@ -142,6 +193,121 @@
         if (res.ok) location.reload();
       };
       reader.readAsDataURL(resized);
+    });
+
+    function parsePdfTextToFields(text) {
+      const pick = (...patterns) => {
+        for (const ptn of patterns) {
+          const m = text.match(ptn);
+          if (m && m[1]) return m[1].trim();
+        }
+        return '';
+      };
+
+      return {
+        reportNo: pick(/(?:報告番号|Report\s*No\.?)\s*[:：]?\s*([A-Z0-9-]+)/i),
+        reportDate: pick(/(?:報告日|日付|Date)\s*[:：]?\s*([0-9]{4}[\/\-年][0-9]{1,2}[\/\-月][0-9]{1,2}日?)/i),
+        facility: pick(/(?:施設名|公園名|園名|Facility)\s*[:：]?\s*(.+)/i),
+        equipment: pick(/(?:遊具名|設備名|Equipment)\s*[:：]?\s*(.+)/i),
+        category: pick(/(?:カテゴリ|区分|Category)\s*[:：]?\s*(.+)/i),
+        danger: pick(/(?:危険度|優先度|Danger)\s*[:：]?\s*(.+)/i),
+        comment: pick(/(?:コメント|備考|内容|Comment)\s*[:：]?\s*([\s\S]{1,300})/i)
+      };
+    }
+
+    async function extractTextFromPdf(file) {
+      const status = document.getElementById('pdfExcelStatus');
+      status.textContent = 'PDF解析中...';
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfjsLib = window['pdfjsLib'];
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+      let fullText = '';
+      for (let p = 1; p <= pdf.numPages; p++) {
+        status.textContent = `PDF解析中... (${p}/${pdf.numPages})`;
+        const page = await pdf.getPage(p);
+        const content = await page.getTextContent();
+        const text = content.items.map(item => item.str).join('\n');
+        fullText += `${text}\n`;
+      }
+      return fullText;
+    }
+
+    function fillWorkbook(workbook, fields) {
+      const sheetName = workbook.SheetNames[0] || 'Sheet1';
+      if (!workbook.Sheets[sheetName]) {
+        workbook.Sheets[sheetName] = XLSX.utils.aoa_to_sheet([]);
+        workbook.SheetNames = [sheetName];
+      }
+      const ws = workbook.Sheets[sheetName];
+      const map = {
+        B2: fields.reportNo,
+        B3: fields.reportDate,
+        B4: fields.facility,
+        B5: fields.equipment,
+        B6: fields.category,
+        B7: fields.danger,
+        B8: fields.comment
+      };
+
+      Object.entries(map).forEach(([cell, value]) => {
+        ws[cell] = { t: 's', v: value || '' };
+      });
+
+      ws['!ref'] = ws['!ref'] || 'A1:H20';
+      return workbook;
+    }
+
+    document.getElementById('pdfExcelForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const status = document.getElementById('pdfExcelStatus');
+      const pdf = document.getElementById('pdfFile').files[0];
+      const excelTemplate = document.getElementById('excelTemplate').files[0];
+
+      if (!pdf) {
+        status.textContent = 'PDFファイルを選択してください。';
+        return;
+      }
+
+      try {
+        const text = await extractTextFromPdf(pdf);
+        const fields = parsePdfTextToFields(text);
+
+        let workbook;
+        if (excelTemplate) {
+          const templateBuffer = await excelTemplate.arrayBuffer();
+          workbook = XLSX.read(templateBuffer, { type: 'array' });
+        } else {
+          workbook = XLSX.utils.book_new();
+          const ws = XLSX.utils.aoa_to_sheet([
+            ['項目', '値'],
+            ['報告番号', ''],
+            ['報告日', ''],
+            ['施設名', ''],
+            ['遊具名', ''],
+            ['カテゴリ', ''],
+            ['危険度', ''],
+            ['コメント', '']
+          ]);
+          XLSX.utils.book_append_sheet(workbook, ws, '報告書');
+        }
+
+        const outputBook = fillWorkbook(workbook, fields);
+        const out = XLSX.write(outputBook, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `filled_${pdf.name.replace(/\.pdf$/i, '') || 'report'}.xlsx`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        status.textContent = 'Excelファイルを作成しました。';
+      } catch (err) {
+        console.error(err);
+        status.textContent = '処理に失敗しました。PDF形式やテンプレートを確認してください。';
+      }
     });
   </script>
 </body>
